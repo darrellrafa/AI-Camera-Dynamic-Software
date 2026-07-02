@@ -23,6 +23,7 @@ import {
   Zap,
   Clock,
   Box,
+  Upload,
 } from "lucide-react";
 import {
   BarChart,
@@ -59,6 +60,10 @@ export default function InspectorView() {
   const [selectedPart, setSelectedPart] = useState("crankshaft");
   const [isRunning, setIsRunning] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  const [liveDefects, setLiveDefects] = useState<any[]>([]);
   const [partsProcessed, setPartsProcessed] = useState(247);
   const [rejectRate, setRejectRate] = useState(4.8);
   const [elapsed, setElapsed] = useState(0);
@@ -69,41 +74,81 @@ export default function InspectorView() {
     { name: "Rust", detected: false, confidence: 0 },
   ]);
 
-  // Simulate live updates when QC is running
+  // Capture frame and send to FastAPI backend
   useEffect(() => {
-    if (!isRunning) return;
-    const interval = setInterval(() => {
+    if (!isRunning) {
+      return;
+    }
+    
+    const captureAndDetect = async () => {
       setElapsed((prev) => prev + 1);
-      // Every 5 seconds, simulate a new part processed
-      if (Math.random() > 0.7) {
-        setPartsProcessed((prev) => prev + 1);
-        setRejectRate((prev) => Math.max(0, Math.min(15, prev + (Math.random() - 0.55) * 0.3)));
-        // Randomly toggle defects
-        setDefects([
-          {
-            name: "Scratch",
-            detected: Math.random() > 0.4,
-            confidence: 85 + Math.random() * 14,
-          },
-          {
-            name: "Crack",
-            detected: Math.random() > 0.85,
-            confidence: 70 + Math.random() * 25,
-          },
-          {
-            name: "Dent",
-            detected: Math.random() > 0.75,
-            confidence: 80 + Math.random() * 18,
-          },
-          {
-            name: "Rust",
-            detected: Math.random() > 0.9,
-            confidence: 60 + Math.random() * 35,
-          },
-        ]);
+      
+      if (!videoRef.current || !canvasRef.current) return;
+      
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext("2d");
+        
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          
+          canvas.toBlob(async (blob) => {
+            if (!blob) return;
+            
+            const formData = new FormData();
+            formData.append("file", blob, "frame.jpg");
+            
+            try {
+              // Call FastAPI backend
+              const res = await fetch("http://localhost:8000/api/detect", {
+                method: "POST",
+                body: formData,
+              });
+              
+              if (res.ok) {
+                const result = await res.json();
+                if (result.success) {
+                  const newDefects = result.data.defects;
+                  setLiveDefects(newDefects);
+                  
+                  // Update sidebar defects state
+                  setDefects((prevDefects) => {
+                     return prevDefects.map(d => {
+                        const found = newDefects.find((nd: any) => nd.name.toLowerCase() === d.name.toLowerCase());
+                        if (found) {
+                           return { ...d, detected: true, confidence: found.confidence };
+                        }
+                        return { ...d, detected: false, confidence: 0 };
+                     });
+                  });
+                  
+                  if (result.data.is_defective) {
+                     setRejectRate((prev) => Math.max(0, Math.min(15, prev + 0.1)));
+                  }
+                }
+              }
+            } catch (err) {
+              console.error("API error:", err);
+            }
+          }, "image/jpeg", 0.8);
+        }
       }
-    }, 1000);
-    return () => clearInterval(interval);
+    };
+    
+    // Simulate part process counting
+    const metricsInterval = setInterval(() => {
+        if (Math.random() > 0.7) setPartsProcessed((prev) => prev + 1);
+    }, 5000);
+
+    const interval = setInterval(captureAndDetect, 1000); // 1 FPS inference
+    return () => {
+       clearInterval(interval);
+       clearInterval(metricsInterval);
+    }
   }, [isRunning]);
 
   // Handle Webcam connection
@@ -137,11 +182,64 @@ export default function InspectorView() {
 
   const handleStart = useCallback(() => {
     setIsRunning(true);
+    setUploadedImage(null);
+    setLiveDefects([]);
     setElapsed(0);
   }, []);
 
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Show image immediately
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setUploadedImage(e.target?.result as string);
+    };
+    reader.readAsDataURL(file);
+
+    // Stop webcam if running
+    setIsRunning(false);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch("http://localhost:8000/api/detect", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        if (result.success) {
+          const newDefects = result.data.defects;
+          setLiveDefects(newDefects);
+
+          setDefects((prevDefects) => {
+             return prevDefects.map(d => {
+                const found = newDefects.find((nd: any) => nd.name.toLowerCase() === d.name.toLowerCase());
+                if (found) {
+                   return { ...d, detected: true, confidence: found.confidence };
+                }
+                return { ...d, detected: false, confidence: 0 };
+             });
+          });
+
+          if (result.data.is_defective) {
+             setRejectRate((prev) => Math.max(0, Math.min(15, prev + 0.1)));
+          }
+          setPartsProcessed((prev) => prev + 1);
+        }
+      }
+    } catch (err) {
+      console.error("API error:", err);
+    }
+  };
+
   const handleStop = useCallback(() => {
     setIsRunning(false);
+    setLiveDefects([]);
   }, []);
 
   const formatTime = (seconds: number) => {
@@ -186,6 +284,21 @@ export default function InspectorView() {
           </Select>
 
           {/* Control Buttons */}
+          <input 
+            type="file" 
+            accept="image/*" 
+            className="hidden" 
+            ref={fileInputRef} 
+            onChange={handleFileUpload} 
+          />
+          <Button
+            onClick={() => fileInputRef.current?.click()}
+            variant="outline"
+            className="border-border/60 bg-secondary/60 hover:bg-secondary/80"
+          >
+            <Upload className="mr-2 h-4 w-4 text-cyan-400" />
+            <span className="hidden sm:inline">PHOTO</span>
+          </Button>
           <Button
             onClick={handleStart}
             disabled={isRunning}
@@ -209,12 +322,12 @@ export default function InspectorView() {
       </div>
 
       {/* Status Strip */}
-      {isRunning && (
+      {(isRunning || uploadedImage) && (
         <div className="flex items-center gap-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-2">
           <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 pulse-glow" />
+            <span className={`h-2 w-2 rounded-full bg-emerald-500 ${isRunning ? "pulse-glow" : ""}`} />
             <span className="text-xs font-semibold uppercase tracking-wider text-emerald-400">
-              QC Running
+              {isRunning ? "QC Running" : "Photo Analyzed"}
             </span>
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -226,7 +339,7 @@ export default function InspectorView() {
             YOLOv8 — 98.2% Uptime
           </div>
           <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[10px]">
-            LIVE
+            {isRunning ? "LIVE" : "STATIC"}
           </Badge>
         </div>
       )}
@@ -246,6 +359,11 @@ export default function InspectorView() {
                   ● REC
                 </Badge>
               )}
+              {uploadedImage && !isRunning && (
+                <Badge className="bg-cyan-500/15 text-cyan-400 border-cyan-500/30">
+                  PHOTO
+                </Badge>
+              )}
             </div>
           </CardHeader>
           <CardContent className="p-2">
@@ -256,11 +374,23 @@ export default function InspectorView() {
                 autoPlay 
                 playsInline 
                 muted 
-                className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${isRunning ? 'opacity-100' : 'opacity-0'}`} 
+                className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${isRunning && !uploadedImage ? 'opacity-100' : 'opacity-0'}`} 
               />
+              
+              {/* Uploaded Photo */}
+              {uploadedImage && (
+                <img 
+                  src={uploadedImage} 
+                  alt="Uploaded QC" 
+                  className="absolute inset-0 h-full w-full object-cover bg-black"
+                />
+              )}
+              
+              {/* Hidden Canvas for capturing frames */}
+              <canvas ref={canvasRef} className="hidden" />
 
               {/* Simulated camera feed — dark background with part silhouette */}
-              <div className={`absolute inset-0 flex items-center justify-center transition-opacity duration-500 ${isRunning ? 'opacity-0' : 'opacity-100'}`}>
+              <div className={`absolute inset-0 flex items-center justify-center transition-opacity duration-500 ${isRunning || uploadedImage ? 'opacity-0' : 'opacity-100'}`}>
                 {/* Part silhouette */}
                 <svg
                   viewBox="0 0 400 280"
@@ -282,45 +412,56 @@ export default function InspectorView() {
                 </svg>
               </div>
 
-              {/* Bounding boxes overlay — only show when running */}
-              {isRunning && (
+                  {/* Bounding boxes overlay — only show when running */}
+              {(isRunning || uploadedImage) && (
                 <>
-                  {defects[0].detected && (
-                    <div className="absolute left-[18%] top-[28%] h-[22%] w-[16%] rounded border-2 border-orange-500 bg-orange-500/10 transition-all duration-500">
-                      <span className="absolute -top-5 left-0 rounded bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold text-white whitespace-nowrap">
-                        SCRATCH {defects[0].confidence.toFixed(1)}%
-                      </span>
-                    </div>
-                  )}
-                  {defects[1].detected && (
-                    <div className="absolute left-[55%] top-[35%] h-[18%] w-[12%] rounded border-2 border-rose-500 bg-rose-500/10 transition-all duration-500">
-                      <span className="absolute -top-5 left-0 rounded bg-rose-500 px-1.5 py-0.5 text-[9px] font-bold text-white whitespace-nowrap">
-                        CRACK {defects[1].confidence.toFixed(1)}%
-                      </span>
-                    </div>
-                  )}
-                  {defects[2].detected && (
-                    <div className="absolute left-[68%] top-[50%] h-[16%] w-[14%] rounded border-2 border-cyan-500 bg-cyan-500/10 transition-all duration-500">
-                      <span className="absolute -top-5 left-0 rounded bg-cyan-500 px-1.5 py-0.5 text-[9px] font-bold text-white whitespace-nowrap">
-                        DENT {defects[2].confidence.toFixed(1)}%
-                      </span>
-                    </div>
-                  )}
-                  {defects[3].detected && (
-                    <div className="absolute left-[32%] top-[58%] h-[20%] w-[15%] rounded border-2 border-purple-500 bg-purple-500/10 transition-all duration-500">
-                      <span className="absolute -top-5 left-0 rounded bg-purple-500 px-1.5 py-0.5 text-[9px] font-bold text-white whitespace-nowrap">
-                        RUST {defects[3].confidence.toFixed(1)}%
-                      </span>
-                    </div>
-                  )}
+                  {liveDefects.map((defect: any, idx: number) => {
+                    const getBoxStyle = (name: string) => {
+                      switch(name) {
+                        case "Scratch": return "border-orange-500 bg-orange-500/10";
+                        case "Crack": return "border-rose-500 bg-rose-500/10";
+                        case "Dent": return "border-cyan-500 bg-cyan-500/10";
+                        case "Rust": return "border-purple-500 bg-purple-500/10";
+                        default: return "border-rose-500 bg-rose-500/10";
+                      }
+                    };
+                    const getLabelStyle = (name: string) => {
+                      switch(name) {
+                        case "Scratch": return "bg-orange-500";
+                        case "Crack": return "bg-rose-500";
+                        case "Dent": return "bg-cyan-500";
+                        case "Rust": return "bg-purple-500";
+                        default: return "bg-rose-500";
+                      }
+                    };
+                    
+                    return (
+                      <div
+                        key={idx}
+                        className={`absolute rounded border-2 transition-all duration-300 ${getBoxStyle(defect.name)}`}
+                        style={{
+                          left: `${defect.box.x * 100}%`,
+                          top: `${defect.box.y * 100}%`,
+                          width: `${defect.box.w * 100}%`,
+                          height: `${defect.box.h * 100}%`,
+                        }}
+                      >
+                        <span className={`absolute -top-5 left-0 rounded px-1.5 py-0.5 text-[9px] font-bold text-white whitespace-nowrap ${getLabelStyle(defect.name)}`}>
+                          {defect.name.toUpperCase()} {defect.confidence.toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+                  })}
 
-                  {/* Scan line */}
-                  <div className="scanline absolute left-0 h-0.5 w-full bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
+                  {/* Scan line (only when live) */}
+                  {isRunning && (
+                    <div className="scanline absolute left-0 h-0.5 w-full bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
+                  )}
                 </>
               )}
 
               {/* Idle overlay */}
-              {!isRunning && (
+              {!isRunning && !uploadedImage && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-[1px]">
                   <div className="rounded-full border border-border/30 bg-secondary/50 p-4">
                     <Play className="h-8 w-8 text-muted-foreground" />
@@ -339,7 +480,7 @@ export default function InspectorView() {
 
               {/* Timestamp */}
               <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded bg-black/60 px-2 py-0.5 text-[10px] font-mono text-emerald-400/80">
-                CAM-01 | {isRunning ? formatTime(elapsed) : "STANDBY"} | {PARTS.find(p => p.id === selectedPart)?.code}
+                CAM-01 | {isRunning ? formatTime(elapsed) : uploadedImage ? "PHOTO ANALYZED" : "STANDBY"} | {PARTS.find(p => p.id === selectedPart)?.code}
               </div>
             </div>
           </CardContent>
