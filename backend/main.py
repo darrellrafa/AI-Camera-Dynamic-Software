@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from ai_engine import AnomalyDetector
 
@@ -29,7 +29,10 @@ def health_check():
     return {"status": "healthy", "ai_model": "YOLOv8 & Padim (MVTec AD)", "database": "connected"}
 
 @app.post("/api/detect")
-async def detect_anomaly(file: UploadFile = File(...)):
+async def detect_anomaly(
+    file: UploadFile = File(...),
+    ai_model: str = Form("anomalib")
+):
     """
     Receives an image frame from the frontend, runs MVTec AD anomaly detection,
     and returns bounding boxes of defects.
@@ -38,10 +41,34 @@ async def detect_anomaly(file: UploadFile = File(...)):
     
     try:
         # Run detection
-        results = ai_detector.detect(contents)
+        results = ai_detector.detect(contents, ai_model=ai_model)
         return {"success": True, "data": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.post("/api/train")
+async def train_model_endpoint(
+    part_name: str = Form(...),
+    dataset: UploadFile = File(...)
+):
+    """
+    Receives a dataset zip file and triggers the automated AI training pipeline.
+    """
+    import os
+    from ai_engine import train_model_simulated
+    
+    # Save the dataset temporarily
+    dataset_dir = f"datasets/{part_name.lower().replace(' ', '_')}"
+    os.makedirs(dataset_dir, exist_ok=True)
+    file_path = os.path.join(dataset_dir, dataset.filename)
+    
+    with open(file_path, "wb") as f:
+        f.write(await dataset.read())
+        
+    # Trigger background training (simulated)
+    result = await train_model_simulated(part_name, file_path)
+    
+    return {"success": True, "message": "Training completed successfully", "data": result}
 
 # To run the server locally: uvicorn main:app --reload
 

@@ -101,6 +101,7 @@ export default function InspectorView() {
             
             const formData = new FormData();
             formData.append("file", blob, "frame.jpg");
+            formData.append("ai_model", localStorage.getItem("aiModel") || "anomalib");
             
             try {
               // Call FastAPI backend
@@ -112,7 +113,8 @@ export default function InspectorView() {
               if (res.ok) {
                 const result = await res.json();
                 if (result.success) {
-                  const newDefects = result.data.defects;
+                  const threshold = Number(localStorage.getItem("confidenceThreshold") || "50");
+                  const newDefects = result.data.defects.filter((d: any) => d.confidence >= threshold);
                   setLiveDefects(newDefects);
                   
                   // Update sidebar defects state
@@ -203,6 +205,7 @@ export default function InspectorView() {
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("ai_model", localStorage.getItem("aiModel") || "anomalib");
 
     try {
       const res = await fetch("http://localhost:8000/api/detect", {
@@ -213,7 +216,8 @@ export default function InspectorView() {
       if (res.ok) {
         const result = await res.json();
         if (result.success) {
-          const newDefects = result.data.defects;
+          const threshold = Number(localStorage.getItem("confidenceThreshold") || "50");
+          const newDefects = result.data.defects.filter((d: any) => d.confidence >= threshold);
           setLiveDefects(newDefects);
 
           setDefects((prevDefects) => {

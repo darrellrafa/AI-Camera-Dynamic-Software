@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -109,17 +109,37 @@ export default function AdminView() {
   const [formName, setFormName] = useState("");
   const [formPartNumber, setFormPartNumber] = useState("");
   const [formTargetSpecs, setFormTargetSpecs] = useState("");
+  const [datasetFile, setDatasetFile] = useState<File | null>(null);
+  
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainingStatus, setTrainingStatus] = useState("");
 
   // AI Config state
-  const [aiModel, setAiModel] = useState("yolov8");
+  const [aiModel, setAiModel] = useState("anomalib");
   const [confidence, setConfidence] = useState([75]);
   const [plcProtocol, setPlcProtocol] = useState("profinet");
+
+  // Load saved config
+  useEffect(() => {
+    const savedConf = localStorage.getItem("confidenceThreshold");
+    if (savedConf) setConfidence([Number(savedConf)]);
+    const savedModel = localStorage.getItem("aiModel");
+    if (savedModel) setAiModel(savedModel);
+  }, []);
+
+  const handleSaveConfig = () => {
+    localStorage.setItem("confidenceThreshold", confidence[0].toString());
+    localStorage.setItem("aiModel", aiModel);
+    alert("Configuration Saved Successfully!");
+  };
 
   const openAddDialog = () => {
     setEditingPart(null);
     setFormName("");
     setFormPartNumber("");
     setFormTargetSpecs("");
+    setDatasetFile(null);
+    setTrainingStatus("");
     setDialogOpen(true);
   };
 
@@ -131,7 +151,7 @@ export default function AdminView() {
     setDialogOpen(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formName || !formPartNumber) return;
 
     if (editingPart) {
@@ -142,7 +162,35 @@ export default function AdminView() {
             : p
         )
       );
+      setDialogOpen(false);
     } else {
+      // If there's a dataset, train first
+      if (datasetFile) {
+        setIsTraining(true);
+        setTrainingStatus("Uploading dataset and initializing training...");
+        
+        const formData = new FormData();
+        formData.append("part_name", formName);
+        formData.append("dataset", datasetFile);
+        
+        try {
+          const res = await fetch("http://localhost:8000/api/train", {
+            method: "POST",
+            body: formData
+          });
+          
+          if (res.ok) {
+            setTrainingStatus("Training completed successfully!");
+          } else {
+            setTrainingStatus("Training failed.");
+          }
+        } catch (err) {
+          setTrainingStatus("Error connecting to training server.");
+        }
+        
+        setIsTraining(false);
+      }
+      
       const newPart: SparePart = {
         id: Date.now().toString(),
         name: formName,
@@ -152,8 +200,8 @@ export default function AdminView() {
         createdAt: new Date().toISOString().split("T")[0],
       };
       setParts((prev) => [...prev, newPart]);
+      setDialogOpen(false);
     }
-    setDialogOpen(false);
   };
 
   const handleDelete = (id: string) => {
@@ -308,6 +356,12 @@ export default function AdminView() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="anomalib">
+                    <div className="flex items-center gap-2">
+                      <CircuitBoard className="h-3.5 w-3.5 text-blue-400" />
+                      Anomalib (MVTec AD) — Industrial Standard
+                    </div>
+                  </SelectItem>
                   <SelectItem value="yolov8">
                     <div className="flex items-center gap-2">
                       <CircuitBoard className="h-3.5 w-3.5 text-emerald-400" />
@@ -318,18 +372,6 @@ export default function AdminView() {
                     <div className="flex items-center gap-2">
                       <CircuitBoard className="h-3.5 w-3.5 text-cyan-400" />
                       YOLOv9 — Enhanced Accuracy
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="mobilenet">
-                    <div className="flex items-center gap-2">
-                      <CircuitBoard className="h-3.5 w-3.5 text-amber-400" />
-                      MobileNet — Lightweight
-                    </div>
-                  </SelectItem>
-                  <SelectItem value="efficientdet">
-                    <div className="flex items-center gap-2">
-                      <CircuitBoard className="h-3.5 w-3.5 text-purple-400" />
-                      EfficientDet — Balanced
                     </div>
                   </SelectItem>
                 </SelectContent>
@@ -504,7 +546,10 @@ export default function AdminView() {
 
       {/* Save Config */}
       <div className="flex justify-end">
-        <Button className="bg-emerald-600 px-8 font-semibold text-white shadow-lg shadow-emerald-500/15 transition-all hover:bg-emerald-500 hover:shadow-emerald-500/30">
+        <Button 
+          onClick={handleSaveConfig}
+          className="bg-emerald-600 px-8 font-semibold text-white shadow-lg shadow-emerald-500/15 transition-all hover:bg-emerald-500 hover:shadow-emerald-500/30"
+        >
           <Save className="mr-2 h-4 w-4" />
           Save All Configuration
         </Button>
@@ -562,6 +607,31 @@ export default function AdminView() {
                 className="border-border/60 bg-secondary/60"
               />
             </div>
+            
+            {!editingPart && (
+              <div className="space-y-2">
+                <Label htmlFor="dataset-upload" className="text-xs">
+                  Upload Normal Dataset (ZIP or Images)
+                </Label>
+                <Input
+                  id="dataset-upload"
+                  type="file"
+                  accept=".zip, image/*"
+                  multiple
+                  onChange={(e) => setDatasetFile(e.target.files?.[0] || null)}
+                  className="border-border/60 bg-secondary/60 text-xs"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Upload normal (clean) photos to train the AI model for this new part.
+                </p>
+              </div>
+            )}
+            
+            {trainingStatus && (
+              <div className={`text-xs p-2 rounded ${trainingStatus.includes("failed") || trainingStatus.includes("Error") ? "bg-rose-500/10 text-rose-400" : "bg-emerald-500/10 text-emerald-400"}`}>
+                {trainingStatus}
+              </div>
+            )}
           </div>
 
           <DialogFooter>
@@ -569,16 +639,17 @@ export default function AdminView() {
               variant="outline"
               onClick={() => setDialogOpen(false)}
               className="border-border/40"
+              disabled={isTraining}
             >
               Cancel
             </Button>
             <Button
               onClick={handleSave}
-              disabled={!formName || !formPartNumber}
+              disabled={!formName || !formPartNumber || isTraining}
               className="bg-emerald-600 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
             >
               <Save className="mr-2 h-4 w-4" />
-              {editingPart ? "Update Part" : "Add Part"}
+              {isTraining ? "Training..." : editingPart ? "Update Part" : "Add Part & Train"}
             </Button>
           </DialogFooter>
         </DialogContent>
